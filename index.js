@@ -1,136 +1,86 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
-const pino = require('pino');
-const qrcode = require('qrcode-terminal');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-let sock = null;
-let qrCode = null;
 let isConnected = false;
 
-// Importar Baileys
-let Baileys;
-let makeWASocket;
-let DisconnectReason;
-let useMultiFileAuthState;
-let fetchLatestBaileysVersion;
-
-async function initBaileys() {
+// Intentar conectar Baileys de forma segura
+async function tryConnectBaileys() {
   try {
-    const baileysModule = await import('@whiskeysockets/baileys');
-    makeWASocket = baileysModule.default;
-    DisconnectReason = baileysModule.DisconnectReason;
-    useMultiFileAuthState = baileysModule.useMultiFileAuthState;
-    fetchLatestBaileysVersion = baileysModule.fetchLatestBaileysVersion;
-    return true;
-  } catch (error) {
-    console.error('Error importando Baileys:', error);
-    return false;
-  }
-}
-
-async function connectWhatsApp() {
-  try {
-    if (!makeWASocket) {
-      console.log('Baileys no está cargado aún...');
-      setTimeout(connectWhatsApp, 2000);
-      return;
-    }
-
+    const baileys = await import('@whiskeysockets/baileys');
+    const makeWASocket = baileys.default;
+    const { useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason } = baileys;
+    
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     const { version } = await fetchLatestBaileysVersion();
 
-    sock = makeWASocket({
+    const sock = makeWASocket({
       version,
-      logger: pino({ level: 'silent' }),
-      printQRInTerminal: false,
       auth: state,
+      logger: require('pino')({ level: 'silent' })
     });
 
-    sock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        qrCode = qr;
-        console.log('✅ QR GENERADO');
-      }
-
+    sock.ev.on('connection.update', (update) => {
+      const { connection, qr } = update;
       if (connection === 'open') {
         isConnected = true;
-        console.log('🟢 WhatsApp Conectado');
+        console.log('✅ WhatsApp conectado');
       }
-
       if (connection === 'close') {
         isConnected = false;
-        console.log('🔴 Desconectado');
       }
     });
 
     sock.ev.on('creds.update', saveCreds);
+    
+    return sock;
   } catch (error) {
-    console.error('❌ Error conectando:', error.message);
-    setTimeout(connectWhatsApp, 3000);
+    console.error('Error Baileys:', error.message);
+    return null;
   }
 }
 
-// RUTAS
+let sock = null;
+
+// RUTAS BÁSICAS
 app.get('/', (req, res) => {
   res.json({
-    servidor: 'WhatsApp Webhook Allianz ✅',
-    conectado: isConnected,
+    status: 'Servidor activo',
+    conectado: isConnected
   });
 });
 
 app.get('/status', (req, res) => {
   res.json({
     conectado: isConnected,
-    estado: isConnected ? 'Conectado ✅' : 'Desconectado ❌',
-  });
-});
-
-app.get('/qr', (req, res) => {
-  if (!qrCode) {
-    return res.send(
-      '<h1>Esperando QR...</h1><p>Recarga la página en unos segundos</p>'
-    );
-  }
-
-  qrcode.generate(qrCode, { small: true }, (qr_ascii) => {
-    res.send(`
-      <html>
-        <body style="text-align:center; font-family: Arial;">
-          <h1>📱 Escanea el QR</h1>
-          <pre>${qr_ascii}</pre>
-        </body>
-      </html>
-    `);
+    mensaje: isConnected ? 'WhatsApp conectado ✅' : 'WhatsApp desconectado ❌'
   });
 });
 
 app.post('/webhook', async (req, res) => {
   try {
-    const { nombre, telefono, proyeccion, aportacion, edad, regimen, email } = req.body;
+    const { nombre, telefono, proyeccion } = req.body;
 
-    if (!telefono || !nombre) {
-      return res.status(400).json({ error: 'Faltan nombre y telefono' });
-    }
-
-    if (!isConnected) {
-      return res.status(503).json({ error: 'WhatsApp desconectado' });
+    if (!telefono || !isConnected) {
+      return res.status(400).json({ 
+        error: isConnected ? 'Faltan datos' : 'WhatsApp no conectado'
+      });
     }
 
     let numero = telefono.replace(/\D/g, '');
     if (!numero.startsWith('52')) numero = '52' + numero;
 
-    const mensaje = `¡Hola ${nombre}! 👋\n\nTu registro está procesado.\n\n💰 Proyección: $${proyeccion || 'calculando'}\n\n📅 Te contactaremos pronto.\n\n*OptiMaxx Plus - Allianz* 🚀`;
-
-    await sock.sendMessage(numero + '@s.whatsapp.net', { text: mensaje });
-
-    res.json({ success: true, mensaje: `Enviado a ${nombre}` });
+    const mensaje = `Hola ${nombre}, tu proyección es: $${proyeccion}. OptiMaxx Plus 🚀`;
+    
+    if (sock) {
+      await sock.sendMessage(numero + '@s.whatsapp.net', { text: mensaje });
+      res.json({ success: true });
+    } else {
+      res.status(503).json({ error: 'WhatsApp no está disponible' });
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -140,10 +90,10 @@ app.post('/webhook', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 
 (async () => {
-  await initBaileys();
-  connectWhatsApp();
-
+  sock = await tryConnectBaileys();
+  
   app.listen(PORT, () => {
     console.log(`🚀 Servidor en puerto ${PORT}`);
+    console.log(`Status: http://localhost:${PORT}/status`);
   });
 })();
