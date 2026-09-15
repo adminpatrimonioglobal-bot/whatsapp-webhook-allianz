@@ -1,7 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import makeWASocket, {
+import {
+  default as makeWASocket,
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
@@ -27,41 +28,49 @@ let isConnected = false;
 // FUNCIÓN: Conectar a WhatsApp con Baileys
 // ============================================
 async function connectWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-  const { version } = await fetchLatestBaileysVersion();
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { version } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({
-    version,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    auth: state,
-    syncFullHistory: false,
-  });
+    sock = makeWASocket({
+      version,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      auth: state,
+      syncFullHistory: false,
+    });
 
-  // Evento: QR generado (mostrar para que user escanee)
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    // Evento: QR generado
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-    if (qr) {
-      qrCode = qr;
-      console.log('QR CODE GENERADO - Escanea en https://tuservidor.com/qr');
-    }
-
-    if (connection === 'open') {
-      isConnected = true;
-      console.log('✅ WhatsApp Conectado Exitosamente');
-    }
-
-    if (connection === 'close') {
-      isConnected = false;
-      if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-        connectWhatsApp(); // Reconectar si se desconectó sin logout
+      if (qr) {
+        qrCode = qr;
+        console.log('✅ QR CODE GENERADO - Escanea en /qr');
       }
-    }
-  });
 
-  // Evento: Credenciales actualizadas
-  sock.ev.on('creds.update', saveCreds);
+      if (connection === 'open') {
+        isConnected = true;
+        console.log('🟢 WhatsApp Conectado Exitosamente');
+      }
+
+      if (connection === 'close') {
+        isConnected = false;
+        console.log('🔴 WhatsApp Desconectado');
+        if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
+          setTimeout(() => connectWhatsApp(), 3000);
+        }
+      }
+    });
+
+    // Evento: Credenciales actualizadas
+    sock.ev.on('creds.update', saveCreds);
+
+    console.log('📱 Intentando conectar a WhatsApp...');
+  } catch (error) {
+    console.error('❌ Error conectando WhatsApp:', error);
+    setTimeout(() => connectWhatsApp(), 3000);
+  }
 }
 
 // ============================================
@@ -69,11 +78,30 @@ async function connectWhatsApp() {
 // ============================================
 app.get('/qr', (req, res) => {
   if (!qrCode) {
-    return res.json({ mensaje: 'Escanea el QR que aparecerá aquí cuando se desconecte' });
+    return res.send(
+      '<h1>QR no disponible aún</h1><p>Abre esta página en unos segundos...</p>'
+    );
   }
 
   qrcode.generate(qrCode, { small: true }, (qr_ascii) => {
-    res.send(`<pre>${qr_ascii}</pre>`);
+    res.send(`
+      <html>
+        <head>
+          <title>WhatsApp QR - Allianz</title>
+          <style>
+            body { font-family: Arial; text-align: center; padding: 20px; background: #f5f5f5; }
+            pre { background: white; padding: 20px; border-radius: 8px; display: inline-block; }
+            h1 { color: #25D366; }
+          </style>
+        </head>
+        <body>
+          <h1>📱 Escanea este QR con WhatsApp</h1>
+          <p>Abre WhatsApp en tu teléfono y apunta la cámara aquí</p>
+          <pre>${qr_ascii}</pre>
+          <p><a href="/status">Ver estado</a></p>
+        </body>
+      </html>
+    `);
   });
 });
 
@@ -81,9 +109,11 @@ app.get('/qr', (req, res) => {
 // RUTA: Estado de conexión
 // ============================================
 app.get('/status', (req, res) => {
+  const status = isConnected ? 'Conectado ✅' : 'Desconectado ❌';
   res.json({
     conectado: isConnected,
-    estado: isConnected ? 'WhatsApp Conectado ✅' : 'WhatsApp Desconectado ❌',
+    estado: status,
+    url_qr: 'https://' + (process.env.RENDER_EXTERNAL_URL || 'localhost:3000') + '/qr',
   });
 });
 
@@ -105,7 +135,6 @@ app.post('/webhook', async (req, res) => {
       regimen,
     } = req.body;
 
-    // Validar datos
     if (!telefono || !nombre) {
       return res.status(400).json({
         error: 'Faltan datos: nombre y telefono son requeridos',
@@ -114,11 +143,12 @@ app.post('/webhook', async (req, res) => {
 
     if (!isConnected) {
       return res.status(503).json({
-        error: 'WhatsApp no está conectado. Escanea el QR en /qr',
+        error: 'WhatsApp no está conectado',
+        qr_url: '/qr',
       });
     }
 
-    // Formatear número de teléfono (agregar código de país si no lo tiene)
+    // Formatear número
     let numeroFormato = telefono.replace(/\D/g, '');
     if (!numeroFormato.startsWith('52')) {
       numeroFormato = '52' + numeroFormato;
@@ -126,7 +156,7 @@ app.post('/webhook', async (req, res) => {
 
     const idChat = numeroFormato + '@s.whatsapp.net';
 
-    // Construir mensaje personalizado
+    // Mensaje personalizado
     const mensaje = `¡Hola ${nombre}! 👋
 
 Acabo de procesar tu registro para la estrategia *OptiMaxx Plus* 🎯
@@ -137,8 +167,7 @@ Acabo de procesar tu registro para la estrategia *OptiMaxx Plus* 🎯
 • Aportación mensual: $${aportacion}
 • Régimen: ${regimen}
 
-${proyeccion ? `💰 *Tu proyección a 25 años:* $${proyeccion} MXN\n\n` : ''}
-📅 *Próximos pasos:*
+${proyeccion ? `💰 *Tu proyección a 25 años:*\n$${proyeccion} MXN\n\n` : ''}📅 *Próximos pasos:*
 1. Revisa tu email para la proyección completa
 2. Agenda una llamada conmigo para personalizar tu plan
 3. Comienza a blindar tu patrimonio hoy
@@ -167,7 +196,7 @@ ${proyeccion ? `💰 *Tu proyección a 25 años:* $${proyeccion} MXN\n\n` : ''}
 });
 
 // ============================================
-// RUTA: Enviar mensaje manual (para testing)
+// RUTA: Enviar mensaje manual (testing)
 // ============================================
 app.post('/enviar-mensaje', async (req, res) => {
   try {
@@ -202,6 +231,7 @@ app.get('/', (req, res) => {
   res.json({
     servidor: 'WhatsApp Webhook activo ✅',
     version: '1.0.0',
+    conectado: isConnected,
     endpoints: {
       status: 'GET /status',
       qr: 'GET /qr',
