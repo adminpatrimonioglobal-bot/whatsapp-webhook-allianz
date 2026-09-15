@@ -1,0 +1,25 @@
+{
+  "name": "whatsapp-webhook-allianz",
+  "version": "1.0.0",
+  "description": "Servidor WhatsApp automático para PPR Allianz con Baileys",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": ["whatsapp", "baileys", "webhook", "allianz"],
+  "author": "David Herrera",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "@whiskeysockets/baileys": "^6.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^8.16.2"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
